@@ -1,0 +1,917 @@
+-- // AXIOM SCRIPT v3 // --
+-- ESP | TP | FLY | AIMLOCK | CROSSHAIR
+-- RightShift=GUI | Z=ESP | F=TP | H=Follow | G=Fly | E=Aimlock | N=Lock Nearest
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+local Camera           = workspace.CurrentCamera
+local LocalPlayer      = Players.LocalPlayer
+
+-- ══════════════════════════════════════════
+--               STATE
+-- ══════════════════════════════════════════
+local State = {
+    esp     = { enabled = false },
+    tp      = { selectedPlayer = nil, autoFollow = false, interval = 0.5, lastTime = 0 },
+    fly     = { enabled = false, speed = 50, bv = nil, bav = nil, conn = nil },
+    aimlock = { enabled = false, selectedPlayer = nil, targetPart = "Head", lockedCamType = false },
+    gui     = { visible = true },
+}
+
+-- ══════════════════════════════════════════
+--               UTILITIES
+-- ══════════════════════════════════════════
+local function isChatFocused()
+    return UserInputService:GetFocusedTextBox() ~= nil
+end
+
+local function getRoot(player)
+    local c = player and player.Character
+    if not c then return nil end
+    return c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso")
+end
+
+local function getHead(player)
+    local c = player and player.Character
+    return c and c:FindFirstChild("Head")
+end
+
+local function getPart(player, partName)
+    local c = player and player.Character
+    if not c then return nil end
+    local map = {
+        ["Head"]      = "Head",
+        ["Torso"]     = "HumanoidRootPart",
+        ["Left Arm"]  = "Left Arm",
+        ["Right Arm"] = "Right Arm",
+        ["Left Leg"]  = "Left Leg",
+        ["Right Leg"] = "Right Leg",
+    }
+    local rn = map[partName] or partName
+    return c:FindFirstChild(rn)
+        or c:FindFirstChild("Upper"..rn)
+        or c:FindFirstChild(rn:gsub(" ",""))
+        or c:FindFirstChild("HumanoidRootPart")
+end
+
+local function getTeamColor(player)
+    return (player.Team and player.TeamColor.Color) or Color3.fromRGB(255,255,255)
+end
+
+local function getTeamName(player)
+    return (player.Team and player.Team.Name) or "No Team"
+end
+
+local function pastelOf(c)
+    return Color3.new((c.R+1)/2,(c.G+1)/2,(c.B+1)/2)
+end
+
+local function getStuds(player)
+    local r1 = getRoot(LocalPlayer)
+    local r2 = getRoot(player)
+    if r1 and r2 then return math.floor((r1.Position-r2.Position).Magnitude) end
+    return 0
+end
+
+local function getNearestPlayer()
+    local myRoot = getRoot(LocalPlayer); if not myRoot then return nil end
+    local nearest, bestDist = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        local r = getRoot(p)
+        if r then
+            local d = (myRoot.Position - r.Position).Magnitude
+            if d < bestDist then bestDist = d; nearest = p end
+        end
+    end
+    return nearest
+end
+
+-- ══════════════════════════════════════════
+--       AIMLOCK CORE (STABLE LOCKED)
+-- ══════════════════════════════════════════
+local AIMLOCK_PRIORITY = Enum.RenderPriority.Camera.Value + 1
+
+local function startAimlockLoop()
+    pcall(function() RunService:UnbindFromRenderStep("AxiomAimlock") end)
+    RunService:BindToRenderStep("AxiomAimlock", AIMLOCK_PRIORITY, function()
+        if not State.aimlock.enabled then return end
+        local ap = State.aimlock.selectedPlayer; if not ap then return end
+        local part = getPart(ap, State.aimlock.targetPart); if not part then return end
+        if Camera.CameraType ~= Enum.CameraType.Scriptable then
+            Camera.CameraType = Enum.CameraType.Scriptable
+            State.aimlock.lockedCamType = true
+        end
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, part.Position)
+    end)
+end
+
+local function stopAimlockLoop()
+    pcall(function() RunService:UnbindFromRenderStep("AxiomAimlock") end)
+    if State.aimlock.lockedCamType then
+        Camera.CameraType = Enum.CameraType.Custom
+        State.aimlock.lockedCamType = false
+    end
+end
+
+-- ══════════════════════════════════════════
+--            GUI CONSTRUCTION
+-- ══════════════════════════════════════════
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name             = "AxiomUI"
+ScreenGui.ResetOnSpawn     = false
+ScreenGui.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset   = true
+pcall(function() ScreenGui.Parent = game:GetService("CoreGui") end)
+if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+-- Crosshair
+local Crosshair            = Instance.new("Frame")
+Crosshair.Size             = UDim2.new(0,6,0,6)
+Crosshair.AnchorPoint      = Vector2.new(0.5,0.5)
+Crosshair.Position         = UDim2.new(0.5,0,0.5,0)
+Crosshair.BackgroundColor3 = Color3.fromRGB(255,255,255)
+Crosshair.BorderSizePixel  = 0
+Crosshair.ZIndex           = 999
+Crosshair.Parent           = ScreenGui
+Instance.new("UICorner",Crosshair).CornerRadius = UDim.new(1,0)
+
+-- Main Frame
+local Main              = Instance.new("Frame")
+Main.Name               = "Main"
+Main.Size               = UDim2.new(0,390,0,580)
+Main.Position           = UDim2.new(0.5,-195,0.5,-290)
+Main.BackgroundColor3   = Color3.fromRGB(12,12,18)
+Main.BorderSizePixel    = 0
+Main.Active             = true
+Main.Draggable          = true
+Main.ClipsDescendants   = true   -- clips so content doesnt bleed outside main rect
+Main.Parent             = ScreenGui
+Instance.new("UICorner",Main).CornerRadius = UDim.new(0,10)
+local mainStroke = Instance.new("UIStroke",Main)
+mainStroke.Color = Color3.fromRGB(55,55,80); mainStroke.Thickness = 1
+
+-- Resize bar
+local ResizeBar            = Instance.new("Frame")
+ResizeBar.Name             = "ResizeBar"
+ResizeBar.Size             = UDim2.new(1,0,0,8)
+ResizeBar.Position         = UDim2.new(0,0,1,-8)
+ResizeBar.BackgroundColor3 = Color3.fromRGB(55,55,80)
+ResizeBar.BorderSizePixel  = 0
+ResizeBar.Active           = true
+ResizeBar.ZIndex           = 20
+ResizeBar.Parent           = Main
+Instance.new("UICorner",ResizeBar).CornerRadius = UDim.new(0,4)
+do
+    local dragging,startY,startH = false,0,0
+    ResizeBar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging=true; startY=i.Position.Y; startH=Main.Size.Y.Offset
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+            Main.Size = UDim2.new(0,Main.Size.X.Offset,0,math.clamp(startH+(i.Position.Y-startY),300,960))
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end
+    end)
+end
+
+-- Title bar
+local TitleBar            = Instance.new("Frame")
+TitleBar.Size             = UDim2.new(1,0,0,38)
+TitleBar.BackgroundColor3 = Color3.fromRGB(20,20,32)
+TitleBar.BorderSizePixel  = 0
+TitleBar.ZIndex           = 5
+TitleBar.Parent           = Main
+do
+    Instance.new("UICorner",TitleBar).CornerRadius = UDim.new(0,10)
+    local fix = Instance.new("Frame",TitleBar)
+    fix.Size = UDim2.new(1,0,0,10); fix.Position = UDim2.new(0,0,1,-10)
+    fix.BackgroundColor3 = Color3.fromRGB(20,20,32); fix.BorderSizePixel=0
+end
+
+local TitleLabel = Instance.new("TextLabel",TitleBar)
+TitleLabel.Text="⚡  E P S T E I N _ N I G G E R _ B I T C H"; TitleLabel.Size=UDim2.new(1,-10,1,0)
+TitleLabel.Position=UDim2.new(0,12,0,0); TitleLabel.BackgroundTransparency=1
+TitleLabel.TextColor3=Color3.fromRGB(180,180,255); TitleLabel.TextSize=15
+TitleLabel.Font=Enum.Font.GothamBold; TitleLabel.TextXAlignment=Enum.TextXAlignment.Left
+TitleLabel.ZIndex=6
+
+local SubLabel = Instance.new("TextLabel",TitleBar)
+SubLabel.Text="RightShift = Toggle"; SubLabel.Size=UDim2.new(0,160,1,0)
+SubLabel.Position=UDim2.new(1,-168,0,0); SubLabel.BackgroundTransparency=1
+SubLabel.TextColor3=Color3.fromRGB(90,90,110); SubLabel.TextSize=10
+SubLabel.Font=Enum.Font.Gotham; SubLabel.TextXAlignment=Enum.TextXAlignment.Right
+SubLabel.ZIndex=6
+
+-- ══════════════════════════════════════════
+--   SCROLLING FRAME (proper canvas sizing)
+-- ══════════════════════════════════════════
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Name                   = "MainScroll"
+Scroll.Size                   = UDim2.new(1,-6,1,-48)   -- leave room for title + bottom pad
+Scroll.Position               = UDim2.new(0,3,0,43)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel        = 0
+Scroll.ScrollBarThickness     = 4
+Scroll.ScrollBarImageColor3   = Color3.fromRGB(80,80,130)
+Scroll.CanvasSize             = UDim2.new(0,0,0,0)
+Scroll.AutomaticCanvasSize    = Enum.AutomaticSize.Y   -- auto-expands canvas as children grow
+Scroll.ScrollingDirection     = Enum.ScrollingDirection.Y
+Scroll.ElasticBehavior        = Enum.ElasticBehavior.Never
+Scroll.ClipsDescendants       = true
+Scroll.Parent                 = Main
+
+local ScrollLayout = Instance.new("UIListLayout",Scroll)
+ScrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ScrollLayout.Padding   = UDim.new(0,6)
+
+local ScrollPad = Instance.new("UIPadding",Scroll)
+ScrollPad.PaddingTop    = UDim.new(0,6)
+ScrollPad.PaddingBottom = UDim.new(0,12)
+ScrollPad.PaddingLeft   = UDim.new(0,4)
+ScrollPad.PaddingRight  = UDim.new(0,4)
+
+-- ══════════════════════════════════════════
+--          COMPONENT BUILDERS
+-- ══════════════════════════════════════════
+
+-- Toggle
+local function makeToggle(parent, labelText, order, callback)
+    local row = Instance.new("Frame")
+    row.Size=UDim2.new(1,0,0,34); row.BackgroundColor3=Color3.fromRGB(22,22,34)
+    row.BorderSizePixel=0; row.LayoutOrder=order; row.Parent=parent
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,6)
+    local st=Instance.new("UIStroke",row); st.Color=Color3.fromRGB(45,45,65); st.Thickness=1
+
+    local lbl=Instance.new("TextLabel",row)
+    lbl.Text=labelText; lbl.Size=UDim2.new(1,-70,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(200,200,200)
+    lbl.TextSize=12; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+
+    local track=Instance.new("Frame",row)
+    track.Size=UDim2.new(0,38,0,20); track.Position=UDim2.new(1,-50,0.5,-10)
+    track.BackgroundColor3=Color3.fromRGB(50,50,70); track.BorderSizePixel=0
+    Instance.new("UICorner",track).CornerRadius=UDim.new(1,0)
+
+    local dot=Instance.new("Frame",track)
+    dot.Size=UDim2.new(0,14,0,14); dot.Position=UDim2.new(0,3,0.5,-7)
+    dot.BackgroundColor3=Color3.fromRGB(140,140,160); dot.BorderSizePixel=0
+    Instance.new("UICorner",dot).CornerRadius=UDim.new(1,0)
+
+    local btn=Instance.new("TextButton",row)
+    btn.Size=UDim2.new(1,0,1,0); btn.BackgroundTransparency=1; btn.Text=""
+
+    local toggled=false
+    local function refresh()
+        TweenService:Create(track,TweenInfo.new(0.15),{
+            BackgroundColor3=toggled and Color3.fromRGB(60,110,255) or Color3.fromRGB(50,50,70)
+        }):Play()
+        TweenService:Create(dot,TweenInfo.new(0.15),{
+            Position=toggled and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7),
+            BackgroundColor3=toggled and Color3.fromRGB(255,255,255) or Color3.fromRGB(140,140,160)
+        }):Play()
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        toggled=not toggled; refresh()
+        if callback then callback(toggled) end
+    end)
+
+    local function forceSet(v)
+        if toggled==v then return end
+        toggled=v; refresh()
+    end
+    return row, forceSet
+end
+
+-- Part Dropdown (scrollable popup)
+local function makePartDropdown(parent, order, onChange)
+    local PARTS = {"Head","Torso","Left Arm","Right Arm","Left Leg","Right Leg"}
+
+    local wrapper = Instance.new("Frame")
+    wrapper.Size=UDim2.new(1,0,0,34); wrapper.BackgroundColor3=Color3.fromRGB(22,22,34)
+    wrapper.BorderSizePixel=0; wrapper.LayoutOrder=order; wrapper.ClipsDescendants=false
+    wrapper.ZIndex=10; wrapper.Parent=parent
+    Instance.new("UICorner",wrapper).CornerRadius=UDim.new(0,6)
+    local st=Instance.new("UIStroke",wrapper); st.Color=Color3.fromRGB(45,45,65); st.Thickness=1
+
+    local lbl=Instance.new("TextLabel",wrapper)
+    lbl.Text="Aimlock Part"; lbl.Size=UDim2.new(0.45,0,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(175,175,195)
+    lbl.TextSize=11; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+
+    local dropBtn=Instance.new("TextButton",wrapper)
+    dropBtn.Size=UDim2.new(0,130,0,24); dropBtn.Position=UDim2.new(1,-138,0.5,-12)
+    dropBtn.BackgroundColor3=Color3.fromRGB(35,35,60); dropBtn.BorderSizePixel=0
+    dropBtn.Text="Head  ▾"; dropBtn.TextColor3=Color3.fromRGB(200,200,255)
+    dropBtn.TextSize=11; dropBtn.Font=Enum.Font.GothamBold; dropBtn.ZIndex=11
+    Instance.new("UICorner",dropBtn).CornerRadius=UDim.new(0,4)
+
+    -- Scrollable popup
+    local ITEM_H  = 26
+    local VISIBLE = 4
+    local popH    = VISIBLE * ITEM_H + 8
+
+    local popup=Instance.new("Frame")
+    popup.Size=UDim2.new(0,130,0,popH)
+    popup.Position=UDim2.new(1,-138,1,2)
+    popup.BackgroundColor3=Color3.fromRGB(28,28,50)
+    popup.BorderSizePixel=0; popup.Visible=false; popup.ZIndex=50
+    popup.ClipsDescendants=true
+    popup.Parent=wrapper
+    Instance.new("UICorner",popup).CornerRadius=UDim.new(0,6)
+    local st2=Instance.new("UIStroke",popup); st2.Color=Color3.fromRGB(60,60,100); st2.Thickness=1
+
+    -- inner scroll for the popup list
+    local popScroll=Instance.new("ScrollingFrame",popup)
+    popScroll.Size=UDim2.new(1,-2,1,-4); popScroll.Position=UDim2.new(0,1,0,2)
+    popScroll.BackgroundTransparency=1; popScroll.BorderSizePixel=0
+    popScroll.ScrollBarThickness=3; popScroll.ScrollBarImageColor3=Color3.fromRGB(80,80,130)
+    popScroll.CanvasSize=UDim2.new(0,0,0,0); popScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    popScroll.ScrollingDirection=Enum.ScrollingDirection.Y
+    popScroll.ElasticBehavior=Enum.ElasticBehavior.Never
+    popScroll.ZIndex=51
+
+    local pLayout=Instance.new("UIListLayout",popScroll)
+    pLayout.SortOrder=Enum.SortOrder.LayoutOrder; pLayout.Padding=UDim.new(0,2)
+    local pPad=Instance.new("UIPadding",popScroll)
+    pPad.PaddingTop=UDim.new(0,2); pPad.PaddingBottom=UDim.new(0,2)
+    pPad.PaddingLeft=UDim.new(0,2); pPad.PaddingRight=UDim.new(0,2)
+
+    for idx,partName in ipairs(PARTS) do
+        local opt=Instance.new("TextButton",popScroll)
+        opt.Size=UDim2.new(1,0,0,ITEM_H); opt.BackgroundColor3=Color3.fromRGB(35,35,58)
+        opt.BorderSizePixel=0; opt.Text=partName; opt.TextColor3=Color3.fromRGB(190,190,210)
+        opt.TextSize=11; opt.Font=Enum.Font.Gotham; opt.LayoutOrder=idx; opt.ZIndex=52
+        Instance.new("UICorner",opt).CornerRadius=UDim.new(0,4)
+        opt.MouseEnter:Connect(function() opt.BackgroundColor3=Color3.fromRGB(55,55,90) end)
+        opt.MouseLeave:Connect(function() opt.BackgroundColor3=Color3.fromRGB(35,35,58) end)
+        opt.MouseButton1Click:Connect(function()
+            State.aimlock.targetPart=partName
+            dropBtn.Text=partName.."  ▾"
+            popup.Visible=false
+            if onChange then onChange(partName) end
+        end)
+    end
+
+    dropBtn.MouseButton1Click:Connect(function()
+        popup.Visible=not popup.Visible
+    end)
+
+    UserInputService.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 then
+            task.defer(function()
+                if popup.Visible then
+                    local abs=popup.AbsolutePosition; local sz=popup.AbsoluteSize
+                    local mp=UserInputService:GetMouseLocation()
+                    if mp.X<abs.X or mp.X>abs.X+sz.X or mp.Y<abs.Y or mp.Y>abs.Y+sz.Y then
+                        popup.Visible=false
+                    end
+                end
+            end)
+        end
+    end)
+
+    return wrapper
+end
+
+-- Collapsible Player List
+local function makePlayerList(parent, title, order, onSelect)
+    local wrapper=Instance.new("Frame")
+    wrapper.Size=UDim2.new(1,0,0,30); wrapper.BackgroundColor3=Color3.fromRGB(18,18,28)
+    wrapper.BorderSizePixel=0; wrapper.LayoutOrder=order; wrapper.ClipsDescendants=true
+    wrapper.Parent=parent
+    Instance.new("UICorner",wrapper).CornerRadius=UDim.new(0,6)
+    local st=Instance.new("UIStroke",wrapper); st.Color=Color3.fromRGB(45,45,65); st.Thickness=1
+
+    local headerBtn=Instance.new("TextButton",wrapper)
+    headerBtn.Size=UDim2.new(1,0,0,30); headerBtn.BackgroundTransparency=1; headerBtn.Text=""
+
+    local arrowLbl=Instance.new("TextLabel",headerBtn)
+    arrowLbl.Text="▶  "..title; arrowLbl.Size=UDim2.new(1,-90,1,0); arrowLbl.Position=UDim2.new(0,8,0,0)
+    arrowLbl.BackgroundTransparency=1; arrowLbl.TextColor3=Color3.fromRGB(150,150,210)
+    arrowLbl.TextSize=12; arrowLbl.Font=Enum.Font.GothamBold; arrowLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+    local refreshBtn=Instance.new("TextButton",wrapper)
+    refreshBtn.Size=UDim2.new(0,66,0,20); refreshBtn.Position=UDim2.new(1,-74,0.5,-10)
+    refreshBtn.BackgroundColor3=Color3.fromRGB(35,35,55); refreshBtn.BorderSizePixel=0
+    refreshBtn.Text="↻ Refresh"; refreshBtn.TextColor3=Color3.fromRGB(140,140,190)
+    refreshBtn.TextSize=10; refreshBtn.Font=Enum.Font.Gotham; refreshBtn.ZIndex=5
+    Instance.new("UICorner",refreshBtn).CornerRadius=UDim.new(0,4)
+
+    -- Scrollable list inside collapse
+    local MAX_VISIBLE_ROWS = 5
+    local ROW_H            = 28
+
+    local listScroll=Instance.new("ScrollingFrame",wrapper)
+    listScroll.Position=UDim2.new(0,4,0,32); listScroll.Size=UDim2.new(1,-8,0,0)
+    listScroll.BackgroundTransparency=1; listScroll.BorderSizePixel=0
+    listScroll.ScrollBarThickness=3; listScroll.ScrollBarImageColor3=Color3.fromRGB(80,80,130)
+    listScroll.CanvasSize=UDim2.new(0,0,0,0); listScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    listScroll.ScrollingDirection=Enum.ScrollingDirection.Y
+    listScroll.ElasticBehavior=Enum.ElasticBehavior.Never
+    listScroll.ClipsDescendants=true
+
+    local lLayout=Instance.new("UIListLayout",listScroll)
+    lLayout.SortOrder=Enum.SortOrder.LayoutOrder; lLayout.Padding=UDim.new(0,2)
+    local lPad=Instance.new("UIPadding",listScroll)
+    lPad.PaddingTop=UDim.new(0,2); lPad.PaddingBottom=UDim.new(0,2)
+    lPad.PaddingLeft=UDim.new(0,2); lPad.PaddingRight=UDim.new(0,2)
+
+    local expanded=false
+    local selectedPlayer=nil
+    local selectedBtn_=nil
+
+    local function recalcHeight()
+        task.wait()
+        if expanded then
+            local playerCount = #Players:GetPlayers()-1
+            local visRows     = math.min(playerCount, MAX_VISIBLE_ROWS)
+            local scrollH     = math.max(visRows * (ROW_H+2) + 4, 30)
+            listScroll.Size   = UDim2.new(1,-8,0,scrollH)
+            wrapper.Size      = UDim2.new(1,0,0,34+scrollH+4)
+        else
+            listScroll.Size   = UDim2.new(1,-8,0,0)
+            wrapper.Size      = UDim2.new(1,0,0,30)
+        end
+    end
+
+    local function populate()
+        for _,ch in ipairs(listScroll:GetChildren()) do
+            if ch:IsA("TextButton") then ch:Destroy() end
+        end
+        selectedPlayer=nil; selectedBtn_=nil
+        if onSelect then onSelect(nil) end
+        local idx=0
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p==LocalPlayer then continue end
+            local pb=Instance.new("TextButton",listScroll)
+            pb.Size=UDim2.new(1,0,0,ROW_H); pb.BackgroundColor3=Color3.fromRGB(28,28,44)
+            pb.BorderSizePixel=0; pb.Text=p.Name; pb.TextColor3=Color3.fromRGB(190,190,190)
+            pb.TextSize=11; pb.Font=Enum.Font.Gotham; pb.LayoutOrder=idx
+            Instance.new("UICorner",pb).CornerRadius=UDim.new(0,4)
+            pb.MouseButton1Click:Connect(function()
+                if selectedBtn_ then
+                    selectedBtn_.BackgroundColor3=Color3.fromRGB(28,28,44)
+                    selectedBtn_.TextColor3=Color3.fromRGB(190,190,190)
+                end
+                if selectedPlayer==p then
+                    selectedPlayer=nil; selectedBtn_=nil
+                    if onSelect then onSelect(nil) end
+                else
+                    selectedPlayer=p; selectedBtn_=pb
+                    pb.BackgroundColor3=Color3.fromRGB(55,80,200)
+                    pb.TextColor3=Color3.fromRGB(255,255,255)
+                    if onSelect then onSelect(p) end
+                end
+            end)
+            idx=idx+1
+        end
+        recalcHeight()
+    end
+
+    headerBtn.MouseButton1Click:Connect(function()
+        expanded=not expanded
+        arrowLbl.Text=(expanded and "▼  " or "▶  ")..title
+        if expanded then populate() else recalcHeight() end
+    end)
+    refreshBtn.MouseButton1Click:Connect(function()
+        if expanded then populate() end
+    end)
+
+    return wrapper, function() return selectedPlayer end
+end
+
+-- Speed Counter (max 1000)
+local function makeCounter(parent, labelText, order, default, minV, maxV, step, onChange)
+    step = step or 1
+    local row=Instance.new("Frame")
+    row.Size=UDim2.new(1,0,0,34); row.BackgroundColor3=Color3.fromRGB(22,22,34)
+    row.BorderSizePixel=0; row.LayoutOrder=order; row.Parent=parent
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,6)
+    local st=Instance.new("UIStroke",row); st.Color=Color3.fromRGB(45,45,65); st.Thickness=1
+
+    local lbl=Instance.new("TextLabel",row)
+    lbl.Text=labelText; lbl.Size=UDim2.new(0.45,0,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(175,175,195)
+    lbl.TextSize=11; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+
+    local function makeBtn(txt,xOff)
+        local b=Instance.new("TextButton",row)
+        b.Size=UDim2.new(0,24,0,24); b.Position=UDim2.new(1,xOff,0.5,-12)
+        b.BackgroundColor3=Color3.fromRGB(40,40,65); b.BorderSizePixel=0
+        b.Text=txt; b.TextColor3=Color3.fromRGB(200,200,255)
+        b.TextSize=16; b.Font=Enum.Font.GothamBold
+        Instance.new("UICorner",b).CornerRadius=UDim.new(0,4)
+        return b
+    end
+
+    local minusBtn=makeBtn("−",-108)
+    local valLbl=Instance.new("TextLabel",row)
+    valLbl.Size=UDim2.new(0,46,1,0); valLbl.Position=UDim2.new(1,-88,0,0)
+    valLbl.BackgroundTransparency=1; valLbl.Text=tostring(default)
+    valLbl.TextColor3=Color3.fromRGB(220,220,255); valLbl.TextSize=13
+    valLbl.Font=Enum.Font.GothamBold; valLbl.TextXAlignment=Enum.TextXAlignment.Center
+    local plusBtn=makeBtn("+",-40)
+
+    local val=default
+    minusBtn.MouseButton1Click:Connect(function()
+        val=math.max(minV,val-step); valLbl.Text=tostring(val)
+        if onChange then onChange(val) end
+    end)
+    plusBtn.MouseButton1Click:Connect(function()
+        val=math.min(maxV,val+step); valLbl.Text=tostring(val)
+        if onChange then onChange(val) end
+    end)
+    return row
+end
+
+local function makeSectionHeader(txt,order)
+    local f=Instance.new("Frame")
+    f.Size=UDim2.new(1,0,0,24); f.BackgroundColor3=Color3.fromRGB(28,28,44)
+    f.BorderSizePixel=0; f.LayoutOrder=order; f.Parent=Scroll
+    Instance.new("UICorner",f).CornerRadius=UDim.new(0,5)
+    local lbl=Instance.new("TextLabel",f)
+    lbl.Text=txt; lbl.Size=UDim2.new(1,-10,1,0); lbl.Position=UDim2.new(0,8,0,0)
+    lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(130,130,190)
+    lbl.TextSize=11; lbl.Font=Enum.Font.GothamBold; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    return f
+end
+
+local function makeContainer(order)
+    local f=Instance.new("Frame")
+    f.Size=UDim2.new(1,0,0,0,0); f.AutomaticSize=Enum.AutomaticSize.Y
+    f.BackgroundTransparency=1; f.LayoutOrder=order; f.Parent=Scroll
+    local l=Instance.new("UIListLayout",f); l.SortOrder=Enum.SortOrder.LayoutOrder; l.Padding=UDim.new(0,4)
+    local p=Instance.new("UIPadding",f)
+    p.PaddingLeft=UDim.new(0,4); p.PaddingRight=UDim.new(0,4)
+    return f
+end
+
+-- ══════════════════════════════════════════
+--           BUILD SECTIONS
+-- ══════════════════════════════════════════
+
+makeSectionHeader("─── ESP  [Z] ───────────────────────",10)
+local espCont=makeContainer(11)
+local _,setESPUI=makeToggle(espCont,"ESP Enabled  [Z]",1,function(v)
+    State.esp.enabled=v
+end)
+
+makeSectionHeader("─── TELEPORT  [F / H] ──────────────",20)
+local tpCont=makeContainer(21)
+local _,getTpSel=makePlayerList(tpCont,"Teleport Target",1,function(p)
+    State.tp.selectedPlayer=p
+end)
+local _,setAutoFollowUI=makeToggle(tpCont,"Auto Follow  [H]",2,function(v)
+    State.tp.autoFollow=v
+end)
+makeCounter(tpCont,"Follow Interval (s×10)",3,5,1,20,1,function(v)
+    State.tp.interval=v/10
+end)
+local tpHint=Instance.new("TextLabel",tpCont)
+tpHint.Size=UDim2.new(1,0,0,20); tpHint.BackgroundTransparency=1
+tpHint.Text="   TP Once: [F]     Auto Follow: [H]"
+tpHint.TextColor3=Color3.fromRGB(90,90,120); tpHint.TextSize=10
+tpHint.Font=Enum.Font.Gotham; tpHint.TextXAlignment=Enum.TextXAlignment.Left
+tpHint.LayoutOrder=4
+
+makeSectionHeader("─── FLY  [G] ───────────────────────",30)
+local flyCont=makeContainer(31)
+
+local function applyFly(enabled)
+    State.fly.enabled=enabled
+    if enabled then
+        local char=LocalPlayer.Character
+        if not char then State.fly.enabled=false; return end
+        local hrp=char:FindFirstChild("HumanoidRootPart")
+        if not hrp then State.fly.enabled=false; return end
+        local hum=char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand=true end
+        if State.fly.bv  then State.fly.bv:Destroy()  end
+        if State.fly.bav then State.fly.bav:Destroy() end
+        State.fly.bv=Instance.new("BodyVelocity")
+        State.fly.bv.Velocity=Vector3.zero; State.fly.bv.MaxForce=Vector3.new(1e9,1e9,1e9)
+        State.fly.bv.Parent=hrp
+        State.fly.bav=Instance.new("BodyAngularVelocity")
+        State.fly.bav.AngularVelocity=Vector3.zero; State.fly.bav.MaxTorque=Vector3.new(1e9,1e9,1e9)
+        State.fly.bav.Parent=hrp
+        if State.fly.conn then State.fly.conn:Disconnect() end
+        State.fly.conn=RunService.RenderStepped:Connect(function()
+            if not State.fly.enabled then return end
+            local c2=LocalPlayer.Character; if not c2 then return end
+            local h2=c2:FindFirstChild("HumanoidRootPart"); if not h2 then return end
+            if not State.fly.bv or not State.fly.bv.Parent then return end
+            local cf=Camera.CFrame; local mv=Vector3.zero
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then mv=mv+cf.LookVector  end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then mv=mv-cf.LookVector  end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then mv=mv-cf.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then mv=mv+cf.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space)       then mv=mv+Vector3.yAxis end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then mv=mv-Vector3.yAxis end
+            State.fly.bv.Velocity=mv.Magnitude>0 and mv.Unit*State.fly.speed or Vector3.zero
+        end)
+    else
+        if State.fly.conn then State.fly.conn:Disconnect(); State.fly.conn=nil end
+        if State.fly.bv   then State.fly.bv:Destroy();  State.fly.bv=nil  end
+        if State.fly.bav  then State.fly.bav:Destroy(); State.fly.bav=nil end
+        local ch=LocalPlayer.Character
+        if ch then local hm=ch:FindFirstChildOfClass("Humanoid"); if hm then hm.PlatformStand=false end end
+    end
+end
+
+local _,setFlyUI=makeToggle(flyCont,"Fly  [G]",1,function(v) applyFly(v) end)
+-- Step of 25 so it moves fast enough to reach 1000 without 1000 clicks
+makeCounter(flyCont,"Fly Speed",2,50,1,1000,25,function(v) State.fly.speed=v end)
+
+makeSectionHeader("─── AIMLOCK  [E] / Nearest [N] ─────",40)
+local aimlockCont=makeContainer(41)
+local _,getAimlockSel=makePlayerList(aimlockCont,"Aimlock Target",1,function(p)
+    State.aimlock.selectedPlayer=p
+    if State.aimlock.enabled then startAimlockLoop() end
+end)
+makePartDropdown(aimlockCont,2,function(partName)
+    State.aimlock.targetPart=partName
+end)
+local _,setAimlockUI=makeToggle(aimlockCont,"Aimlock  [E]",3,function(v)
+    State.aimlock.enabled=v
+    if v then startAimlockLoop() else stopAimlockLoop() end
+end)
+local alHint=Instance.new("TextLabel",aimlockCont)
+alHint.Size=UDim2.new(1,0,0,20); alHint.BackgroundTransparency=1
+alHint.Text="   Aimlock: [E]     Lock Nearest: [N]"
+alHint.TextColor3=Color3.fromRGB(90,90,120); alHint.TextSize=10
+alHint.Font=Enum.Font.Gotham; alHint.TextXAlignment=Enum.TextXAlignment.Left
+alHint.LayoutOrder=4
+
+-- ══════════════════════════════════════════
+--    ESP SYSTEM (with working billboard)
+-- ══════════════════════════════════════════
+local ESPData={}
+
+local function removeESPPlayer(player)
+    local d=ESPData[player]; if not d then return end
+    pcall(function() if d.highlight then d.highlight:Destroy() end end)
+    pcall(function() if d.billboard then d.billboard:Destroy() end end)
+    pcall(function() if d.line      then d.line:Remove()       end end)
+    ESPData[player]=nil
+end
+
+local function buildESPPlayer(player)
+    if player==LocalPlayer then return end
+    removeESPPlayer(player)
+    local data={}
+
+    -- Highlight chams
+    local hl=Instance.new("Highlight")
+    hl.Name="AxiomHL_"..player.Name
+    hl.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillTransparency=0.45; hl.OutlineTransparency=0
+    data.highlight=hl
+
+    -- BillboardGui parented to PlayerGui so it always renders
+    -- Adornee is set dynamically each tick
+    local bb=Instance.new("BillboardGui")
+    bb.Name="AxiomBB_"..player.Name
+    bb.AlwaysOnTop=true
+    bb.LightInfluence=0
+    bb.MaxDistance=1500
+    bb.Size=UDim2.new(0,120,0,60)
+    bb.StudsOffsetWorldSpace=Vector3.new(0,3,0)
+    bb.ResetOnSpawn=false
+    bb.ClipsDescendants=false
+    -- Parent to PlayerGui so it's always in the render tree
+    pcall(function() bb.Parent=LocalPlayer.PlayerGui end)
+    if not bb.Parent then bb.Parent=ScreenGui end
+
+    -- Username label
+    local nameLbl=Instance.new("TextLabel",bb)
+    nameLbl.Name="NameLbl"
+    nameLbl.Size=UDim2.new(1,0,0,0); nameLbl.AutomaticSize=Enum.AutomaticSize.Y
+    nameLbl.Position=UDim2.new(0,0,0,0)
+    nameLbl.BackgroundTransparency=1
+    nameLbl.TextStrokeTransparency=0.35; nameLbl.TextStrokeColor3=Color3.fromRGB(0,0,0)
+    nameLbl.Font=Enum.Font.GothamBold
+    nameLbl.TextXAlignment=Enum.TextXAlignment.Center
+    nameLbl.Text=""; nameLbl.TextScaled=false
+
+    -- Team label
+    local teamLbl=Instance.new("TextLabel",bb)
+    teamLbl.Name="TeamLbl"
+    teamLbl.Size=UDim2.new(1,0,0,0); teamLbl.AutomaticSize=Enum.AutomaticSize.Y
+    teamLbl.Position=UDim2.new(0,0,0.45,0)
+    teamLbl.BackgroundTransparency=1
+    teamLbl.TextStrokeTransparency=0.35; teamLbl.TextStrokeColor3=Color3.fromRGB(0,0,0)
+    teamLbl.Font=Enum.Font.Gotham
+    teamLbl.TextXAlignment=Enum.TextXAlignment.Center
+    teamLbl.Text=""; teamLbl.TextScaled=false
+
+    -- Distance label
+    local distLbl=Instance.new("TextLabel",bb)
+    distLbl.Name="DistLbl"
+    distLbl.Size=UDim2.new(1,0,0,0); distLbl.AutomaticSize=Enum.AutomaticSize.Y
+    distLbl.Position=UDim2.new(0,0,0.72,0)
+    distLbl.BackgroundTransparency=1
+    distLbl.TextStrokeTransparency=0.35; distLbl.TextStrokeColor3=Color3.fromRGB(0,0,0)
+    distLbl.Font=Enum.Font.Gotham
+    distLbl.TextXAlignment=Enum.TextXAlignment.Center
+    distLbl.Text=""; distLbl.TextScaled=false
+
+    data.billboard=bb
+    data.nameLbl=nameLbl
+    data.teamLbl=teamLbl
+    data.distLbl=distLbl
+
+    -- Drawing line
+    local line=Drawing.new("Line")
+    line.Thickness=1.5; line.Transparency=0.25; line.ZIndex=3; line.Visible=false
+    data.line=line
+
+    ESPData[player]=data
+end
+
+local function espTick()
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p==LocalPlayer then continue end
+        if not ESPData[p] then buildESPPlayer(p) end
+        local d=ESPData[p]
+        local char=p.Character
+        local myChar=LocalPlayer.Character
+
+        if not State.esp.enabled or not char or not myChar then
+            if d.highlight then d.highlight.Enabled=false end
+            if d.billboard then d.billboard.Enabled=false end
+            if d.line      then d.line.Visible=false      end
+            continue
+        end
+
+        local root=getRoot(p)
+        local myRoot=getRoot(LocalPlayer)
+        local head=getHead(p)
+        if not root or not myRoot then
+            if d.highlight then d.highlight.Enabled=false end
+            if d.billboard then d.billboard.Enabled=false end
+            if d.line      then d.line.Visible=false      end
+            continue
+        end
+
+        local tc=getTeamColor(p)
+        local pastel=pastelOf(tc)
+        local dist=getStuds(p)
+        local tname=getTeamName(p)
+
+        -- Highlight
+        if not d.highlight.Parent then
+            d.highlight.Adornee=char; d.highlight.Parent=char
+        end
+        d.highlight.FillColor=pastel; d.highlight.OutlineColor=tc; d.highlight.Enabled=true
+
+        -- Billboard: dynamic scale based on distance
+        local clamped=math.clamp(dist,8,300)
+        local t=1-(clamped/300)                      -- 0=far, 1=close
+        local bW=math.floor(110+t*110)               -- 110-220px wide
+        local bH=math.floor(55+t*55)                 -- 55-110px tall
+        local tSizeName=math.floor(10+t*10)          -- 10-20
+        local tSizeSmall=math.floor(8+t*8)           -- 8-16
+
+        d.billboard.Adornee=head or root
+        d.billboard.Size=UDim2.new(0,bW,0,bH)
+        d.billboard.Enabled=true
+
+        d.nameLbl.Text=p.Name
+        d.nameLbl.TextColor3=Color3.fromRGB(255,255,255)
+        d.nameLbl.TextSize=tSizeName
+
+        d.teamLbl.Text="["..tname.."]"
+        d.teamLbl.TextColor3=tc
+        d.teamLbl.TextSize=tSizeSmall
+
+        d.distLbl.Text=dist.." studs"
+        d.distLbl.TextColor3=Color3.fromRGB(200,200,200)
+        d.distLbl.TextSize=tSizeSmall
+
+        -- Line
+        local myScreen,myVis=Camera:WorldToViewportPoint(myRoot.Position)
+        local theirScreen,thVis=Camera:WorldToViewportPoint(root.Position)
+        if myVis and thVis then
+            d.line.From=Vector2.new(myScreen.X,myScreen.Y)
+            d.line.To=Vector2.new(theirScreen.X,theirScreen.Y)
+            d.line.Color=tc; d.line.Visible=true
+        else
+            d.line.Visible=false
+        end
+    end
+
+    for p in pairs(ESPData) do
+        if not p or not p.Parent then removeESPPlayer(p) end
+    end
+end
+
+-- ══════════════════════════════════════════
+--            RENDER LOOPS
+-- ══════════════════════════════════════════
+RunService.RenderStepped:Connect(function()
+    espTick()
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not State.tp.autoFollow then return end
+    local now=tick()
+    if now-State.tp.lastTime<State.tp.interval then return end
+    State.tp.lastTime=now
+    local tp=State.tp.selectedPlayer
+    local tpr=tp and getRoot(tp)
+    local lpr=getRoot(LocalPlayer)
+    if tpr and lpr then lpr.CFrame=tpr.CFrame+Vector3.new(0,3,0) end
+end)
+
+-- ══════════════════════════════════════════
+--   KEYBINDS (hard chat guard on every bind)
+-- ══════════════════════════════════════════
+UserInputService.InputBegan:Connect(function(input,gpe)
+    if isChatFocused() then return end
+    if gpe then return end
+
+    if input.KeyCode==Enum.KeyCode.RightShift then
+        Main.Visible=not Main.Visible
+
+    elseif input.KeyCode==Enum.KeyCode.Z then
+        State.esp.enabled=not State.esp.enabled
+        setESPUI(State.esp.enabled)
+
+    elseif input.KeyCode==Enum.KeyCode.F then
+        local tp=State.tp.selectedPlayer
+        local tpr=tp and getRoot(tp)
+        local lpr=getRoot(LocalPlayer)
+        if tpr and lpr then lpr.CFrame=tpr.CFrame+Vector3.new(0,3,0) end
+
+    elseif input.KeyCode==Enum.KeyCode.H then
+        State.tp.autoFollow=not State.tp.autoFollow
+        setAutoFollowUI(State.tp.autoFollow)
+
+    elseif input.KeyCode==Enum.KeyCode.G then
+        local nv=not State.fly.enabled
+        setFlyUI(nv); applyFly(nv)
+
+    elseif input.KeyCode==Enum.KeyCode.E then
+        State.aimlock.enabled=not State.aimlock.enabled
+        setAimlockUI(State.aimlock.enabled)
+        if State.aimlock.enabled then startAimlockLoop() else stopAimlockLoop() end
+
+    elseif input.KeyCode==Enum.KeyCode.N then
+        local nearest=getNearestPlayer()
+        if nearest then
+            State.aimlock.selectedPlayer=nearest
+            State.aimlock.enabled=true
+            setAimlockUI(true)
+            startAimlockLoop()
+        end
+    end
+end)
+
+-- ══════════════════════════════════════════
+--       PLAYER JOIN / LEAVE / RESPAWN
+-- ══════════════════════════════════════════
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function()
+        task.wait(1.5); buildESPPlayer(p)
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+    removeESPPlayer(p)
+    if State.aimlock.selectedPlayer==p then
+        State.aimlock.selectedPlayer=nil
+        State.aimlock.enabled=false
+        setAimlockUI(false); stopAimlockLoop()
+    end
+    if State.tp.selectedPlayer==p then
+        State.tp.selectedPlayer=nil
+        State.tp.autoFollow=false
+        setAutoFollowUI(false)
+    end
+end)
+
+for _,p in ipairs(Players:GetPlayers()) do
+    if p~=LocalPlayer then
+        buildESPPlayer(p)
+        p.CharacterAdded:Connect(function()
+            task.wait(1.5); buildESPPlayer(p)
+        end)
+    end
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    State.fly.enabled=false; setFlyUI(false)
+    State.fly.bv=nil; State.fly.bav=nil; State.fly.conn=nil
+    if State.aimlock.enabled then startAimlockLoop() end
+end)
+
+print("[NIGGER BITCH] ✓  RightShift=GUI | Z=ESP | F=TP | H=Follow | G=Fly(max1000) | E=Aimlock | N=Nearest")
