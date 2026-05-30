@@ -1,0 +1,307 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local HttpService = game:GetService("HttpService")
+
+local BACKEND_URL = "enter-url"
+
+local function urlEncode(str)
+    local result = ""
+    for i = 1, #str do
+        local c = string.sub(str, i, i)
+        if c:match("[a-zA-Z0-9%-._~]") then
+            result = result .. c
+        else
+            result = result .. string.format("%%%02X", string.byte(c))
+        end
+    end
+    return result
+end
+
+local function scanScript(scriptContent, scriptName, callback)
+    local encoded = urlEncode(scriptContent)
+    local url = BACKEND_URL .. "?script=" .. encoded
+    
+    local success, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+    
+    if success then
+        local result = HttpService:JSONDecode(response)
+        callback(result, scriptName)
+    else
+        callback({verdict = "error", reason = "HTTP failed: " .. tostring(response)}, scriptName)
+    end
+end
+
+local function getAllScripts()
+    local scripts = {}
+    local visited = {}
+    
+    local containers = {
+        game,
+        workspace,
+        game:GetService("ReplicatedStorage"),
+        game:GetService("ServerStorage"),
+        game:GetService("ServerScriptService"),
+        game:GetService("StarterGui"),
+        game:GetService("StarterPack"),
+        game:GetService("StarterPlayer"),
+        game:GetService("StarterPlayer").StarterPlayerScripts,
+        game:GetService("StarterPlayer").StarterCharacterScripts,
+        game:GetService("Players"),
+        game:GetService("Lighting"),
+        game:GetService("SoundService"),
+        game:GetService("Chat"),
+        game:GetService("TextService"),
+        game:GetService("TeleportService"),
+        game:GetService("CoreGui"),
+        game:GetService("CorePackages"),
+        game:GetService("HttpService"),
+        game:GetService("RunService"),
+        game:GetService("UserInputService"),
+        game:GetService("ContextMenuService"),
+        game:GetService("GuiService"),
+        game:GetService("MarketplaceService"),
+        game:GetService("MessagingService"),
+        game:GetService("PathfindingService"),
+        game:GetService("PhysicsService"),
+        game:GetService("PointsService"),
+        game:GetService("PolicyService"),
+        game:GetService("ProximityPromptService"),
+        game:GetService("Selection"),
+        game:GetService("Stats"),
+        game:GetService("TestService"),
+        game:GetService("Teams"),
+        game:GetService("Terrain"),
+        game:GetService("VirtualInputManager"),
+        game:GetService("VoiceChatService"),
+        game:GetService("CollectionService"),
+        game:GetService("ChangeHistoryService"),
+        game:GetService("AssetService"),
+        game:GetService("BadgeService"),
+        game:GetService("AnalyticsService"),
+        game:GetService("AdService"),
+        game:GetService("SocialService"),
+    }
+    
+    local function deepSearch(instance, path)
+        if not instance or visited[instance] then return end
+        visited[instance] = true
+        
+        if instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
+            if instance.Source and instance.Source ~= "" then
+                table.insert(scripts, {
+                    name = path,
+                    source = instance.Source,
+                    class = instance.ClassName,
+                    parent = instance.Parent and instance.Parent.Name or "nil"
+                })
+            end
+        end
+        
+        if instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction") or instance:IsA("UnreliableRemoteEvent") then
+            table.insert(scripts, {
+                name = path .. " [REMOTE]",
+                source = "-- Remote object found. Potential backdoor entry point.\n-- Listen for: " .. instance.Name,
+                class = instance.ClassName,
+                parent = instance.Parent and instance.Parent.Name or "nil",
+                isRemote = true
+            })
+        end
+        
+        local success, children = pcall(function()
+            return instance:GetChildren()
+        end)
+        
+        if success and children then
+            for _, child in pairs(children) do
+                local newPath = path .. "/" .. child.Name
+                deepSearch(child, newPath)
+            end
+        end
+    end
+    
+    for _, container in pairs(containers) do
+        if container then
+            local success, err = pcall(function()
+                deepSearch(container, container.ClassName .. ":" .. (container.Name or "ROOT"))
+            end)
+            if not success then
+                print("[!] Error scanning " .. tostring(container) .. ": " .. tostring(err))
+            end
+        end
+    end
+    
+    local player = LocalPlayer
+    if player then
+        if player.Character then
+            deepSearch(player.Character, "Player.Character")
+        end
+        if player.PlayerGui then
+            deepSearch(player.PlayerGui, "Player.PlayerGui")
+        end
+        if player.Backpack then
+            deepSearch(player.Backpack, "Player.Backpack")
+        end
+    end
+    
+    return scripts
+end
+
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "DeepScannerGUI"
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 600, 0, 500)
+mainFrame.Position = UDim2.new(0.5, -300, 0.5, -250)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+title.Text = "🔍 ULTRA-DEEP BACKDOOR SCANNER 🔍"
+title.TextColor3 = Color3.fromRGB(255, 200, 100)
+title.TextScaled = true
+title.Font = Enum.Font.GothamBold
+title.Parent = mainFrame
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 30)
+statusLabel.Position = UDim2.new(0, 10, 0, 50)
+statusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+statusLabel.Text = "Ready. Click START DEEP SCAN."
+statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 12
+statusLabel.Parent = mainFrame
+
+local progressBg = Instance.new("Frame")
+progressBg.Size = UDim2.new(1, -20, 0, 25)
+progressBg.Position = UDim2.new(0, 10, 0, 90)
+progressBg.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+progressBg.BorderSizePixel = 0
+progressBg.Parent = mainFrame
+
+local progressFill = Instance.new("Frame")
+progressFill.Size = UDim2.new(0, 0, 1, 0)
+progressFill.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+progressFill.BorderSizePixel = 0
+progressFill.Parent = progressBg
+
+local progressText = Instance.new("TextLabel")
+progressText.Size = UDim2.new(1, 0, 1, 0)
+progressText.BackgroundTransparency = 1
+progressText.Text = "0%"
+progressText.TextColor3 = Color3.fromRGB(255, 255, 255)
+progressText.TextScaled = true
+progressText.Font = Enum.Font.GothamBold
+progressText.Parent = progressBg
+
+local resultsBox = Instance.new("ScrollingFrame")
+resultsBox.Size = UDim2.new(1, -20, 0, 300)
+resultsBox.Position = UDim2.new(0, 10, 0, 130)
+resultsBox.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+resultsBox.BorderSizePixel = 0
+resultsBox.CanvasSize = UDim2.new(0, 0, 0, 0)
+resultsBox.ScrollBarThickness = 5
+resultsBox.Parent = mainFrame
+
+local resultsList = Instance.new("UIListLayout")
+resultsList.Parent = resultsBox
+resultsList.Padding = UDim.new(0, 5)
+
+local startBtn = Instance.new("TextButton")
+startBtn.Size = UDim2.new(0, 200, 0, 40)
+startBtn.Position = UDim2.new(0.5, -100, 1, -55)
+startBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 100)
+startBtn.Text = "🚀 START DEEP SCAN"
+startBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+startBtn.Font = Enum.Font.GothamBold
+startBtn.TextSize = 14
+startBtn.Parent = mainFrame
+
+local function addResult(text, isBackdoor)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 0, 25)
+    label.BackgroundColor3 = isBackdoor and Color3.fromRGB(100, 30, 30) or Color3.fromRGB(30, 30, 40)
+    label.Text = text
+    label.TextColor3 = isBackdoor and Color3.fromRGB(255, 150, 150) or Color3.fromRGB(200, 200, 200)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 11
+    label.Parent = resultsBox
+    
+    resultsBox.CanvasSize = UDim2.new(0, 0, 0, resultsList.AbsoluteContentSize.Y)
+end
+
+local function clearResults()
+    for _, child in pairs(resultsBox:GetChildren()) do
+        if child:IsA("TextLabel") then child:Destroy() end
+    end
+end
+
+local function startDeepScan()
+    clearResults()
+    statusLabel.Text = "Collecting ALL scripts and remotes..."
+    addResult("Starting ultra-deep scan...", false)
+    
+    local allScripts = getAllScripts()
+    local total = #allScripts
+    
+    if total == 0 then
+        statusLabel.Text = "No scripts or remotes found."
+        addResult("No scripts or remote objects found in this game.", false)
+        addResult("The game may have protected scripts or be completely scriptless.", false)
+        return
+    end
+    
+    statusLabel.Text = string.format("Found %d scripts/remotes. Scanning with AI...", total)
+    addResult(string.format("Found %d scripts and remote objects to analyze.", total), false)
+    
+    local backdoorCount = 0
+    local processed = 0
+    
+    for _, scriptData in ipairs(allScripts) do
+        processed = processed + 1
+        local percent = (processed / total) * 100
+        progressFill.Size = UDim2.new(percent / 100, 0, 1, 0)
+        progressText.Text = string.format("%.1f%% (%d/%d)", percent, processed, total)
+        statusLabel.Text = string.format("Scanning: %s", scriptData.name)
+        
+        scanScript(scriptData.source, scriptData.name, function(result, name)
+            if result.verdict == "malicious" or result.verdict == "suspicious" then
+                backdoorCount = backdoorCount + 1
+                addResult(string.format("[%s] %s - %s", 
+                    string.upper(result.verdict), 
+                    name, 
+                    result.reason), 
+                    true)
+            elseif scriptData.isRemote then
+                addResult(string.format("[REMOTE] %s - Potential backdoor entry point", name), true)
+                backdoorCount = backdoorCount + 1
+            else
+                addResult(string.format("[SAFE] %s - %s", name, result.reason or "No issues"), false)
+            end
+        end)
+        
+        task.wait(0.05)
+    end
+    
+    progressFill.Size = UDim2.new(1, 0, 1, 0)
+    progressText.Text = "100%"
+    statusLabel.Text = string.format("Scan complete! Found %d potential backdoor(s).", backdoorCount)
+    addResult(string.format("\n=== SCAN COMPLETE: %d POTENTIAL BACKDOOR(S) FOUND ===\n", backdoorCount), backdoorCount > 0)
+end
+
+startBtn.MouseButton1Click:Connect(function()
+    task.spawn(startDeepScan)
+end)
+
+print("ULTRA-DEEP SCANNER LOADED")
